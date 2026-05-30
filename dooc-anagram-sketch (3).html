@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Department of Ontological Cartography</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0e0e0e; overflow: hidden;
+    width: 100vw; height: 100vh;
+    cursor: crosshair; user-select: none;
+    -webkit-user-select: none; touch-action: none;
+  }
+  canvas { display: block; position: absolute; top: 0; left: 0; }
+
+  #text-layer {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    pointer-events: none; z-index: 8;
+    gap: 0;
+  }
+  .anagram-line {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 700;
+    font-size: clamp(22px, 5vw, 52px);
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    line-height: 1.6;
+    opacity: 0;
+    transition: none; /* we control opacity via JS */
+    text-align: center;
+    padding: 0 24px;
+  }
+  #caption {
+    position: fixed; bottom: 44px; left: 0; right: 0;
+    text-align: center; pointer-events: none; z-index: 10;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px; font-weight: 400; letter-spacing: 0.38em;
+    color: rgba(255,255,255,0.22); text-transform: uppercase;
+    opacity: 0; transition: opacity 1.5s ease;
+  }
+  #label {
+    position: fixed; bottom: 20px; left: 0; right: 0;
+    text-align: center; pointer-events: none; z-index: 10;
+    font-family: 'Barlow Condensed', sans-serif; font-size: 10px;
+    font-weight: 400; letter-spacing: 0.28em;
+    color: rgba(255,255,255,0.10); text-transform: uppercase;
+  }
+  #flash { position: fixed; inset: 0; opacity: 0; pointer-events: none; z-index: 5; transition: opacity 0.3s ease; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="flash"></div>
+<div id="text-layer">
+  <div class="anagram-line" id="line1"></div>
+  <div class="anagram-line" id="line2"></div>
+</div>
+<div id="caption">SEMANTIC APPROXIMATION — CERTIFIED</div>
+<div id="label">DoOC // 0°N, 0°E</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const captionEl = document.getElementById('caption');
+const flashEl = document.getElementById('flash');
+const line1El = document.getElementById('line1');
+const line2El = document.getElementById('line2');
+
+const COLOURS = [
+  '#E8157A','#C8E000','#4AABE8','#F5A623',
+  '#C4284E','#E8202A','#E8A0C8','#F5D020',
+];
+const CARD_BG = [
+  '#F5A623','#E8202A','#C8E000','#9B1A3A',
+  '#4AABE8','#333333','#C8E000','#2A2A2A',
+];
+const ANAGRAMS = [
+  ['A GORGEOUSLY DETACHED', 'PLATONIC NORM'],
+  ['OLD CARTOGRAPHY OF', 'THE STAGNANT NEON'],
+  ['DOTE ON A TANGLED', 'ORPHANED COSMOLOGY'],
+  ['A LONG TOOTHY', 'NEGLECTED FRONT ROOM'],
+  ['PATHOLOGY OF A ROTTEN', 'NEGLECTED NORM'],
+  ['A GOTHIC PORTRAYAL OF', 'NEGLECTED NOTION'],
+  ['A TOP-NOTCHED', 'LONG FORGOTTEN REALITY'],
+  ['NOTED A CARTLOAD', 'OF PHONY MYTHOLOGY'],
+];
+
+const SOURCE = 'DEPARTMENTOFONTOLOGICALCARTOGRAPHY';
+let W, H;
+let particles = [];
+let state = 'drifting'; // drifting | converging | peaked | retreating | assembling | assembled | scattering
+let anagramIndex = 0;
+let stateTimer = null;
+let dragMap = {};
+
+// Text layer opacity — driven by convergence
+let textOpacity = 0;
+let targetTextOpacity = 0;
+let textColour = '#F5A623';
+
+function getWaitTime(i) {
+  return 9000;
+}
+
+// The centre of the screen — where particles converge toward
+function getConvergenceTarget() {
+  return { x: W / 2, y: H / 2 };
+}
+
+class Particle {
+  constructor(char, index) {
+    this.char = char;
+    this.index = index;
+    this.colour = COLOURS[Math.floor(Math.random() * COLOURS.length)];
+    this.fontSize = Math.random() * 14 + 18;
+    this.x = Math.random() * (W || 400);
+    this.y = Math.random() * (H || 800);
+    this.vx = (Math.random() - 0.5) * 0.5;
+    this.vy = (Math.random() - 0.5) * 0.5;
+    this.opacity = 0.55 + Math.random() * 0.45;
+    this.noiseOffset = Math.random() * 1000;
+    this.noiseSpeed = 0.0016 + Math.random() * 0.002;
+    this.wanderAngle = Math.random() * Math.PI * 2;
+    this.laziness = Math.random();
+
+    // Sticky: once dropped, stays put
+    this.sticky = false;
+    this.dragged = false;
+    this.dragOffsetX = 0;
+    this.dragOffsetY = 0;
+
+    // Each particle orbits a personal offset from centre during convergence
+    // so they don't all pile on top of each other
+    this.orbitRadius = 40 + Math.random() * (Math.min(W,H) * 0.18);
+    this.orbitAngle = (index / SOURCE.length) * Math.PI * 2;
+    this.orbitSpeed = (Math.random() - 0.5) * 0.008;
+  }
+
+  scatter(cx, cy) {
+    if (this.dragged || this.sticky) return;
+    const dx = this.x - cx, dy = this.y - cy;
+    const dist = Math.sqrt(dx*dx+dy*dy)||1;
+    this.vx += (dx/dist) * Math.min(700/dist, 22);
+    this.vy += (dy/dist) * Math.min(700/dist, 22);
+  }
+
+  update(tt, convergence) {
+    // convergence: 0 = pure drift, 1 = fully converged to orbit positions
+    if (this.dragged) { this.vx=0; this.vy=0; return; }
+    if (this.sticky) { this.vx=0; this.vy=0; this.x+=0; this.y+=0; return; }
+
+    if (convergence > 0.04) {
+      // Target: orbit position around centre
+      this.orbitAngle += this.orbitSpeed;
+      const cx = W/2, cy = H/2;
+      const tx = cx + Math.cos(this.orbitAngle) * this.orbitRadius * (1 - convergence * 0.7);
+      const ty = cy + Math.sin(this.orbitAngle) * this.orbitRadius * (1 - convergence * 0.7);
+
+      const dx = tx - this.x, dy = ty - this.y;
+      const pull = 0.06 * convergence * (1 - this.laziness * 0.4);
+      this.vx += dx * pull;
+      this.vy += dy * pull;
+      this.vx *= 0.86;
+      this.vy *= 0.86;
+    } else {
+      // Free drift
+      const n1 = Math.sin(tt*this.noiseSpeed+this.noiseOffset)*0.03;
+      const n2 = Math.cos(tt*this.noiseSpeed*0.73+this.noiseOffset+47)*0.03;
+      this.vx += n1; this.vy += n2;
+      this.vx *= 0.972; this.vy *= 0.972;
+    }
+
+    this.x += this.vx; this.y += this.vy;
+
+    if (convergence < 0.1) {
+      if (this.x < -50) this.x = W+50;
+      if (this.x > W+50) this.x = -50;
+      if (this.y < -50) this.y = H+50;
+      if (this.y > H+50) this.y = -50;
+    }
+  }
+
+  draw(convergence) {
+    // Fade slightly toward background as they converge (text layer takes over)
+    const op = this.opacity * (1 - convergence * 0.55);
+    ctx.save();
+    if (this.dragged || this.sticky) {
+      ctx.shadowColor = this.colour;
+      ctx.shadowBlur = this.sticky ? 12 : 24;
+    }
+    ctx.globalAlpha = Math.max(0.08, op);
+    ctx.fillStyle = this.colour;
+    ctx.font = `700 ${this.fontSize}px 'Barlow Condensed', sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.char, this.x, this.y);
+    ctx.restore();
+  }
+
+  hitTest(px, py) {
+    const hw = this.fontSize * 0.85;
+    const hh = this.fontSize * 0.95;
+    return px>this.x-hw && px<this.x+hw && py>this.y-hh && py<this.y+hh;
+  }
+}
+
+// Convergence value — animated
+let convergence = 0;
+let convergenceTarget = 0;
+
+function setAnagramText(idx) {
+  const [l1, l2] = ANAGRAMS[idx % ANAGRAMS.length];
+  line1El.textContent = l1;
+  line2El.textContent = l2 || '';
+  const colIdx = idx % COLOURS.length;
+  textColour = COLOURS[colIdx];
+  const accentColIdx = (colIdx + 3) % COLOURS.length;
+  // Dominant colour for lines
+  line1El.style.color = textColour;
+  line2El.style.color = COLOURS[(colIdx + 2) % COLOURS.length];
+}
+
+function showText(opacity) {
+  line1El.style.opacity = opacity;
+  line2El.style.opacity = opacity;
+}
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+
+function initParticles() {
+  particles = [];
+  for (let i = 0; i < SOURCE.length; i++) {
+    particles.push(new Particle(SOURCE[i], i));
+  }
+}
+
+function scheduleAssembly(delay) {
+  clearTimeout(stateTimer);
+  stateTimer = setTimeout(() => { if (state==='drifting') startConverge(); }, delay);
+}
+
+function startConverge() {
+  state = 'converging';
+  setAnagramText(anagramIndex);
+  convergenceTarget = 1.0;
+
+  // Text fades in as convergence rises — handled in loop
+  // Peak convergence held briefly, then retreat
+  stateTimer = setTimeout(() => {
+    if (state !== 'converging') return;
+    state = 'peaked';
+    captionEl.style.opacity = '1';
+
+    // Flash card colour
+    const cardBg = CARD_BG[anagramIndex % CARD_BG.length];
+    flashEl.style.background = cardBg;
+    flashEl.style.opacity = '0.10';
+    setTimeout(() => { flashEl.style.opacity='0'; }, 600);
+
+    // Hold at peak then drift apart
+    stateTimer = setTimeout(() => {
+      if (state !== 'peaked') return;
+      state = 'retreating';
+      convergenceTarget = 0;
+      captionEl.style.opacity = '0';
+
+      stateTimer = setTimeout(() => {
+        state = 'drifting';
+        showText(0);
+        anagramIndex++;
+        scheduleAssembly(getWaitTime(anagramIndex));
+      }, 2500);
+    }, 2500);
+  }, 4500); // time to converge + read
+}
+
+function handleScatterTap(x, y) {
+  clearTimeout(stateTimer);
+  captionEl.style.opacity = '0';
+  showText(0);
+  convergenceTarget = 0;
+  state = 'scattering';
+  particles.forEach(p => p.scatter(x, y));
+  stateTimer = setTimeout(() => {
+    state = 'drifting';
+    anagramIndex++;
+    scheduleAssembly(getWaitTime(anagramIndex));
+  }, 1800);
+}
+
+function getParticleAt(x, y) {
+  for (let i=particles.length-1; i>=0; i--) {
+    if (particles[i].hitTest(x,y)) return particles[i];
+  }
+  return null;
+}
+
+// Mouse / touch
+canvas.addEventListener('mousedown', e => {
+  const p = getParticleAt(e.clientX, e.clientY);
+  if (p && !p.sticky) {
+    p.dragged=true; p.dragOffsetX=p.x-e.clientX; p.dragOffsetY=p.y-e.clientY;
+    dragMap['mouse']=p;
+  } else if (!p) {
+    handleScatterTap(e.clientX, e.clientY);
+  }
+  // clicking a sticky particle unsticks it
+  if (p && p.sticky) { p.sticky=false; p.vx=(Math.random()-0.5)*2; p.vy=(Math.random()-0.5)*2; }
+});
+canvas.addEventListener('mousemove', e => {
+  const p=dragMap['mouse'];
+  if(p){p.x=e.clientX+p.dragOffsetX; p.y=e.clientY+p.dragOffsetY;}
+});
+canvas.addEventListener('mouseup', () => {
+  const p=dragMap['mouse'];
+  if(p){ p.dragged=false; p.sticky=true; delete dragMap['mouse']; } // DROP = STICKY
+});
+
+canvas.addEventListener('touchstart', e=>{
+  e.preventDefault();
+  Array.from(e.changedTouches).forEach(touch=>{
+    const p=getParticleAt(touch.clientX,touch.clientY);
+    if(p && p.sticky){ p.sticky=false; p.vx=(Math.random()-0.5)*2; p.vy=(Math.random()-0.5)*2; return; }
+    if(p && !p.sticky){
+      p.dragged=true; p.dragOffsetX=p.x-touch.clientX; p.dragOffsetY=p.y-touch.clientY;
+      dragMap[touch.identifier]=p;
+    } else if(!p){ handleScatterTap(touch.clientX,touch.clientY); }
+  });
+},{passive:false});
+canvas.addEventListener('touchmove', e=>{
+  e.preventDefault();
+  Array.from(e.changedTouches).forEach(touch=>{
+    const p=dragMap[touch.identifier];
+    if(p){p.x=touch.clientX+p.dragOffsetX; p.y=touch.clientY+p.dragOffsetY;}
+  });
+},{passive:false});
+canvas.addEventListener('touchend', e=>{
+  e.preventDefault();
+  Array.from(e.changedTouches).forEach(touch=>{
+    const p=dragMap[touch.identifier];
+    if(p){ p.dragged=false; p.sticky=true; delete dragMap[touch.identifier]; } // DROP = STICKY
+  });
+},{passive:false});
+
+let t = 0;
+function loop() {
+  ctx.fillStyle = 'rgba(14,14,14,0.15)';
+  ctx.fillRect(0, 0, W, H);
+  t++;
+
+  // Smooth convergence
+  convergence += (convergenceTarget - convergence) * 0.025;
+
+  // Drive text opacity from convergence
+  const textTarget = convergence > 0.5 ? (convergence - 0.5) * 2 : 0;
+  textOpacity += (textTarget - textOpacity) * 0.04;
+  showText(Math.max(0, Math.min(1, textOpacity)));
+
+  particles.forEach(p => { p.update(t, convergence); p.draw(convergence); });
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', resize);
+resize();
+initParticles();
+loop();
+scheduleAssembly(getWaitTime(0));
+</script>
+</body>
+</html>

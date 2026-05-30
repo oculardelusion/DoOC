@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Department of Ontological Cartography</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0e0e0e; overflow: hidden;
+    width: 100vw; height: 100vh;
+    cursor: crosshair; user-select: none;
+    -webkit-user-select: none; touch-action: none;
+  }
+  canvas { display: block; position: absolute; top: 0; left: 0; }
+  #caption {
+    position: fixed; bottom: 44px; left: 0; right: 0;
+    text-align: center; pointer-events: none; z-index: 10;
+    opacity: 0; transition: opacity 1.8s ease;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px; font-weight: 400; letter-spacing: 0.38em;
+    color: rgba(255,255,255,0.22); text-transform: uppercase;
+  }
+  #label {
+    position: fixed; bottom: 20px; left: 0; right: 0;
+    text-align: center; pointer-events: none; z-index: 10;
+    font-family: 'Barlow Condensed', sans-serif; font-size: 10px;
+    font-weight: 400; letter-spacing: 0.28em;
+    color: rgba(255,255,255,0.10); text-transform: uppercase;
+  }
+  #flash { position: fixed; inset: 0; opacity: 0; pointer-events: none; z-index: 5; transition: opacity 0.25s ease; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="flash"></div>
+<div id="caption">SEMANTIC APPROXIMATION — CERTIFIED</div>
+<div id="label">DoOC // 0°N, 0°E</div>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const captionEl = document.getElementById('caption');
+const flashEl = document.getElementById('flash');
+
+const COLOURS = [
+  '#E8157A','#C8E000','#4AABE8','#F5A623',
+  '#C4284E','#E8202A','#E8A0C8','#F5D020',
+];
+const CARD_BG = [
+  '#F5A623','#E8202A','#C8E000','#9B1A3A',
+  '#4AABE8','#333333','#C8E000','#2A2A2A',
+];
+const ANAGRAMS = [
+  'A GORGEOUSLY DETACHED\nPLATONIC NORM',
+  'OLD CARTOGRAPHY OF\nTHE STAGNANT NEON',
+  'DOTE ON A TANGLED\nORPHANED COSMOLOGY',
+  'A LONG TOOTHY\nNEGLECTED FRONT ROOM',
+  'PATHOLOGY OF A ROTTEN\nNEGLECTED NORM',
+  'A GOTHIC PORTRAYAL OF\nNEGLECTED NOTION',
+  'A TOP-NOTCHED\nLONG FORGOTTEN REALITY',
+  'NOTED A CARTLOAD\nOF PHONY MYTHOLOGY',
+];
+
+// Source string — each character becomes one particle
+const SOURCE = 'DEPARTMENTOFONTOLOGICALCARTOGRAPHY';
+
+let W, H;
+let particles = [];
+let state = 'drifting';
+let anagramIndex = 0;
+let stateTimer = null;
+let dragMap = {};
+let renderMode = 'drift';
+
+function getWaitTime(i) {
+  return [6000,10000,14000,19000,25000,31000,37000,43000][Math.min(i,7)];
+}
+
+// Calculate target positions for the anagram.
+// Returns array of {x, y, fSize, charIndex} where charIndex maps to SOURCE index.
+// Key insight: we assign positions IN ORDER so particle[i] goes to position[i].
+// This means the letters spell the anagram correctly.
+function calcPositions(anagramIdx) {
+  const anagram = ANAGRAMS[anagramIdx % ANAGRAMS.length];
+  const lines = anagram.split('\n');
+  const fSize = Math.max(24, Math.min(46, W * 0.052));
+  const letterSpacing = fSize * 0.08;
+  const lineHeight = fSize * 1.8;
+  const startY = H / 2 - (lines.length - 1) * lineHeight / 2;
+  const positions = [];
+
+  // We need exactly SOURCE.length positions.
+  // The anagram has fewer letters than SOURCE (punctuation removed).
+  // We'll assign the first N source particles to the N anagram letter positions,
+  // and remaining particles get null targets (they just drift).
+
+  lines.forEach((line, li) => {
+    const letters = line.split('').filter(c => /[A-Z\-]/.test(c));
+
+    ctx.font = `700 ${fSize}px 'Barlow Condensed', sans-serif`;
+    let totalW = letters.reduce((s, c) => s + ctx.measureText(c).width + letterSpacing, 0) - letterSpacing;
+
+    // Scale down if wider than screen
+    const maxW = W - 48;
+    const scale = totalW > maxW ? maxW / totalW : 1;
+    const sFSize = fSize * scale;
+    const sSpacing = letterSpacing * scale;
+
+    ctx.font = `700 ${sFSize}px 'Barlow Condensed', sans-serif`;
+    let totalWScaled = letters.reduce((s, c) => s + ctx.measureText(c).width + sSpacing, 0) - sSpacing;
+    let curX = W / 2 - totalWScaled / 2;
+    const y = startY + li * lineHeight;
+
+    line.split('').forEach(ch => {
+      if (/[A-Z\-]/.test(ch)) {
+        const cw = ctx.measureText(ch).width;
+        positions.push({ x: curX + cw / 2, y, fSize: sFSize });
+        curX += cw + sSpacing;
+      }
+    });
+  });
+
+  return positions;
+}
+
+class Particle {
+  constructor(char, index) {
+    this.char = char;
+    this.index = index; // position in SOURCE string
+    this.driftColour = COLOURS[Math.floor(Math.random() * COLOURS.length)];
+    this.assembledColour = this.driftColour;
+    this.driftFontSize = Math.random() * 12 + 18;
+    this.targetFontSize = this.driftFontSize;
+    this.displayFontSize = this.driftFontSize;
+    this.x = Math.random() * (W || 400);
+    this.y = Math.random() * (H || 800);
+    this.vx = (Math.random() - 0.5) * 0.5;
+    this.vy = (Math.random() - 0.5) * 0.5;
+    this.targetX = null;
+    this.targetY = null;
+    this.opacity = 0.55 + Math.random() * 0.45;
+    this.noiseOffset = Math.random() * 1000;
+    this.noiseSpeed = 0.0016 + Math.random() * 0.002;
+    this.wanderAngle = Math.random() * Math.PI * 2;
+    this.laziness = Math.random();
+    this.assembleBlend = 0;
+    this.dragged = false;
+    this.dragOffsetX = 0;
+    this.dragOffsetY = 0;
+  }
+
+  setTarget(pos, colourIdx) {
+    this.targetX = pos.x;
+    this.targetY = pos.y;
+    this.targetFontSize = pos.fSize;
+    const useAccent = (this.index * 7 + anagramIndex * 13) % 10 < 2;
+    const accentIdx = (colourIdx + 3) % COLOURS.length;
+    this.assembledColour = COLOURS[useAccent ? accentIdx : colourIdx];
+  }
+
+  clearTarget() {
+    this.targetX = null;
+    this.targetY = null;
+  }
+
+  scatter(cx, cy) {
+    if (this.dragged) return;
+    const dx = this.x - cx, dy = this.y - cy;
+    const dist = Math.sqrt(dx*dx+dy*dy)||1;
+    this.vx += (dx/dist) * Math.min(700/dist, 22);
+    this.vy += (dy/dist) * Math.min(700/dist, 22);
+    this.clearTarget();
+    this.assembleBlend = 0;
+  }
+
+  lerpColour(a, b, t) {
+    const p = s => parseInt(s, 16);
+    const ra=p(a.slice(1,3)),ga=p(a.slice(3,5)),ba=p(a.slice(5,7));
+    const rb=p(b.slice(1,3)),gb=p(b.slice(3,5)),bb=p(b.slice(5,7));
+    return `rgb(${Math.round(ra+(rb-ra)*t)},${Math.round(ga+(gb-ga)*t)},${Math.round(ba+(bb-ba)*t)})`;
+  }
+
+  update(tt, mode) {
+    if (this.dragged) { this.vx=0; this.vy=0; return; }
+
+    if (this.targetX !== null && mode !== 'drift') {
+      const dx = this.targetX - this.x;
+      const dy = this.targetY - this.y;
+      const dist = Math.sqrt(dx*dx+dy*dy);
+
+      let pull, wanderScale, damping;
+      if (mode === 'attempt1') {
+        pull = 0.04 * (1 - this.laziness * 0.6);
+        wanderScale = 0.7;
+        damping = 0.90;
+      } else if (mode === 'attempt2') {
+        pull = 0.07 * (1 - this.laziness * 0.4);
+        wanderScale = 0.3;
+        damping = 0.87;
+      } else {
+        pull = 0.10 * (1 - this.laziness * 0.2);
+        wanderScale = 0.06;
+        damping = 0.84;
+      }
+
+      this.wanderAngle += 0.025 + this.laziness * 0.02;
+      const wanderAmt = Math.min(dist * 0.007, 0.5) * wanderScale;
+      this.vx += Math.cos(this.wanderAngle) * wanderAmt;
+      this.vy += Math.sin(this.wanderAngle * 1.3) * wanderAmt;
+      this.vx += dx * pull;
+      this.vy += dy * pull;
+      this.vx *= damping;
+      this.vy *= damping;
+
+      const prox = Math.max(0, 1 - dist / 180);
+      let targetBlend = 0;
+      if (mode === 'attempt1') targetBlend = prox * 0.45;
+      else if (mode === 'attempt2') targetBlend = prox * 0.72;
+      else targetBlend = prox;
+      this.assembleBlend += (targetBlend - this.assembleBlend) * 0.035;
+
+    } else {
+      const n1 = Math.sin(tt*this.noiseSpeed+this.noiseOffset)*0.03;
+      const n2 = Math.cos(tt*this.noiseSpeed*0.73+this.noiseOffset+47)*0.03;
+      this.vx += n1; this.vy += n2;
+      this.vx *= 0.972; this.vy *= 0.972;
+      this.assembleBlend += (0 - this.assembleBlend) * 0.04;
+    }
+
+    const b = Math.max(0, Math.min(1, this.assembleBlend));
+    this.displayFontSize = this.driftFontSize + (this.targetFontSize - this.driftFontSize) * b;
+
+    this.x += this.vx; this.y += this.vy;
+
+    if (this.targetX === null || mode === 'drift') {
+      if (this.x < -50) this.x = W+50;
+      if (this.x > W+50) this.x = -50;
+      if (this.y < -50) this.y = H+50;
+      if (this.y > H+50) this.y = -50;
+    }
+  }
+
+  draw() {
+    const b = Math.max(0, Math.min(1, this.assembleBlend));
+    const col = b > 0.02 ? this.lerpColour(this.driftColour, this.assembledColour, b) : this.driftColour;
+    const op = Math.min(1, this.opacity + 0.45 * b);
+    ctx.save();
+    if (this.dragged) { ctx.shadowColor=this.driftColour; ctx.shadowBlur=24; }
+    ctx.globalAlpha = op;
+    ctx.fillStyle = col;
+    ctx.font = `700 ${this.displayFontSize}px 'Barlow Condensed', sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this.char, this.x, this.y);
+    ctx.restore();
+  }
+
+  hitTest(px, py) {
+    const hw = this.displayFontSize * 0.85;
+    const hh = this.displayFontSize * 0.95;
+    return px>this.x-hw && px<this.x+hw && py>this.y-hh && py<this.y+hh;
+  }
+}
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+
+function initParticles() {
+  particles = [];
+  for (let i = 0; i < SOURCE.length; i++) {
+    particles.push(new Particle(SOURCE[i], i));
+  }
+}
+
+// THE KEY FIX: assign particle[i] to position[i] — in order, not shuffled.
+// The anagram has fewer letters than SOURCE (31 vs 34).
+// We pick which SOURCE particles to use based on the anagram's letter sequence.
+// Remaining particles just drift with no target.
+function assignTargets(anagramIdx) {
+  const positions = calcPositions(anagramIdx);
+  const colourIdx = anagramIdx % COLOURS.length;
+
+  // Clear all targets first
+  particles.forEach(p => { p.clearTarget(); });
+
+  // Assign: position[i] gets particle[i]
+  // If fewer positions than particles, extras just drift
+  positions.forEach((pos, i) => {
+    if (i < particles.length) {
+      particles[i].setTarget(pos, colourIdx);
+    }
+  });
+}
+
+function clearAllTargets() {
+  particles.forEach(p => { p.clearTarget(); p.assembleBlend = 0; });
+}
+
+function scheduleAssembly(delay) {
+  clearTimeout(stateTimer);
+  stateTimer = setTimeout(() => { if (state==='drifting') startAttempt1(); }, delay);
+}
+
+function startAttempt1() {
+  state = 'attempt1'; renderMode = 'attempt1';
+  assignTargets(anagramIndex);
+  stateTimer = setTimeout(() => {
+    state = 'gap1'; renderMode = 'drift';
+    clearAllTargets();
+    stateTimer = setTimeout(() => { if (state==='gap1') startAttempt2(); }, 3000);
+  }, 4500);
+}
+
+function startAttempt2() {
+  state = 'attempt2'; renderMode = 'attempt2';
+  assignTargets(anagramIndex);
+  stateTimer = setTimeout(() => {
+    state = 'gap2'; renderMode = 'drift';
+    clearAllTargets();
+    stateTimer = setTimeout(() => { if (state==='gap2') startFinalAssembly(); }, 2500);
+  }, 5000);
+}
+
+function startFinalAssembly() {
+  state = 'assembling'; renderMode = 'assemble';
+  assignTargets(anagramIndex);
+  stateTimer = setTimeout(() => {
+    if (state !== 'assembling') return;
+    state = 'assembled';
+    const cardBg = CARD_BG[anagramIndex % CARD_BG.length];
+    flashEl.style.background = cardBg;
+    flashEl.style.opacity = '0.10';
+    setTimeout(() => { flashEl.style.opacity='0'; }, 700);
+    captionEl.style.opacity = '1';
+    stateTimer = setTimeout(() => { if (state==='assembled') dissolve(); }, 4200);
+  }, 6500);
+}
+
+function dissolve() {
+  captionEl.style.opacity = '0';
+  state = 'scattering'; renderMode = 'drift';
+  clearAllTargets();
+  particles.forEach(p => {
+    if (!p.dragged) {
+      const angle = Math.random() * Math.PI * 2;
+      p.vx = Math.cos(angle) * (1.5 + Math.random() * 2.5);
+      p.vy = Math.sin(angle) * (1.5 + Math.random() * 2.5);
+    }
+  });
+  stateTimer = setTimeout(() => {
+    state = 'drifting';
+    anagramIndex++;
+    scheduleAssembly(getWaitTime(anagramIndex));
+  }, 1800);
+}
+
+function handleScatterTap(x, y) {
+  clearTimeout(stateTimer);
+  captionEl.style.opacity = '0';
+  renderMode = 'drift';
+  clearAllTargets();
+  state = 'scattering';
+  particles.forEach(p => p.scatter(x, y));
+  stateTimer = setTimeout(() => {
+    state = 'drifting';
+    anagramIndex++;
+    scheduleAssembly(getWaitTime(anagramIndex));
+  }, 1800);
+}
+
+function getParticleAt(x, y) {
+  for (let i=particles.length-1; i>=0; i--) {
+    if (particles[i].hitTest(x,y)) return particles[i];
+  }
+  return null;
+}
+function applyMagneticSnap(dragged) {
+  particles.forEach(other => {
+    if (other===dragged||other.dragged) return;
+    const dx=dragged.x-other.x, dy=dragged.y-other.y;
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    if (dist<52&&dist>6) { const n=(52-dist)/52*0.12; dragged.x-=dx*n; dragged.y-=dy*n; }
+  });
+}
+
+canvas.addEventListener('mousedown', e => {
+  const p=getParticleAt(e.clientX,e.clientY);
+  if(p){p.dragged=true;p.dragOffsetX=p.x-e.clientX;p.dragOffsetY=p.y-e.clientY;dragMap['mouse']=p;}
+  else handleScatterTap(e.clientX,e.clientY);
+});
+canvas.addEventListener('mousemove', e => {
+  const p=dragMap['mouse'];
+  if(p){p.x=e.clientX+p.dragOffsetX;p.y=e.clientY+p.dragOffsetY;applyMagneticSnap(p);}
+});
+canvas.addEventListener('mouseup', () => {
+  const p=dragMap['mouse'];
+  if(p){p.dragged=false;p.vx=(Math.random()-0.5)*1.2;p.vy=(Math.random()-0.5)*1.2;delete dragMap['mouse'];}
+});
+canvas.addEventListener('touchstart', e=>{
+  e.preventDefault();
+  Array.from(e.changedTouches).forEach(touch=>{
+    const p=getParticleAt(touch.clientX,touch.clientY);
+    if(p){p.dragged=true;p.dragOffsetX=p.x-touch.clientX;p.dragOffsetY=p.y-touch.clientY;dragMap[touch.identifier]=p;}
+    else handleScatterTap(touch.clientX,touch.clientY);
+  });
+},{passive:false});
+canvas.addEventListener('touchmove', e=>{
+  e.preventDefault();
+  Array.from(e.changedTouches).forEach(touch=>{
+    const p=dragMap[touch.identifier];
+    if(p){p.x=touch.clientX+p.dragOffsetX;p.y=touch.clientY+p.dragOffsetY;applyMagneticSnap(p);}
+  });
+},{passive:false});
+canvas.addEventListener('touchend', e=>{
+  e.preventDefault();
+  Array.from(e.changedTouches).forEach(touch=>{
+    const p=dragMap[touch.identifier];
+    if(p){p.dragged=false;p.vx=(Math.random()-0.5)*1.2;p.vy=(Math.random()-0.5)*1.2;delete dragMap[touch.identifier];}
+  });
+},{passive:false});
+
+let t = 0;
+function loop() {
+  ctx.fillStyle = 'rgba(14,14,14,0.15)';
+  ctx.fillRect(0, 0, W, H);
+  t++;
+  particles.forEach(p => { p.update(t, renderMode); p.draw(); });
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', resize);
+resize();
+initParticles();
+loop();
+scheduleAssembly(getWaitTime(0));
+</script>
+</body>
+</html>
